@@ -18,6 +18,7 @@ import com.alibaba.fastjson.util.TypeUtils;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -53,11 +54,17 @@ public class JSONPath implements JSONAware {
     private SerializeConfig                        serializeConfig;
     private ParserConfig                           parserConfig;
 
+    private boolean                                ignoreNullValue;
+
     public JSONPath(String path){
-        this(path, SerializeConfig.getGlobalInstance(), ParserConfig.getGlobalInstance());
+        this(path, SerializeConfig.getGlobalInstance(), ParserConfig.getGlobalInstance(), true);
     }
 
-    public JSONPath(String path, SerializeConfig serializeConfig, ParserConfig parserConfig){
+    public JSONPath(String path, boolean ignoreNullValue){
+        this(path, SerializeConfig.getGlobalInstance(), ParserConfig.getGlobalInstance(), ignoreNullValue);
+    }
+
+    public JSONPath(String path, SerializeConfig serializeConfig, ParserConfig parserConfig, boolean ignoreNullValue){
         if (path == null || path.length() == 0) {
             throw new JSONPathException("json-path can not be null or empty");
         }
@@ -65,6 +72,7 @@ public class JSONPath implements JSONAware {
         this.path = path;
         this.serializeConfig = serializeConfig;
         this.parserConfig = parserConfig;
+        this.ignoreNullValue = ignoreNullValue;
     }
 
     protected void init() {
@@ -82,17 +90,22 @@ public class JSONPath implements JSONAware {
     }
 
     public boolean isRef() {
-        init();
-        for (int i = 0; i < segments.length; ++i) {
-            Segment segment = segments[i];
-            Class segmentType = segment.getClass();
-            if (segmentType == ArrayAccessSegment.class
-                    || segmentType == PropertySegment.class) {
-                continue;
+        try {
+            init();
+            for (int i = 0; i < segments.length; ++i) {
+                Segment segment = segments[i];
+                Class segmentType = segment.getClass();
+                if (segmentType == ArrayAccessSegment.class
+                        || segmentType == PropertySegment.class) {
+                    continue;
+                }
+                return false;
             }
+            return true;
+        } catch (JSONPathException ex) {
+            // skip
             return false;
         }
-        return true;
     }
 
     public Object eval(Object rootObject) {
@@ -108,6 +121,28 @@ public class JSONPath implements JSONAware {
             currentObject = segment.eval(this, rootObject, currentObject);
         }
         return currentObject;
+    }
+    
+    /**
+     * @since 1.2.76
+     * @param rootObject
+     * @param clazz
+     * @param parserConfig
+     * @return
+     */
+    public <T> T eval(Object rootObject, Type clazz, ParserConfig parserConfig) {
+        Object obj = this.eval(rootObject);
+        return TypeUtils.cast(obj, clazz, parserConfig);
+    }
+    
+    /**
+     * @since 1.2.76
+     * @param rootObject
+     * @param clazz
+     * @return
+     */
+    public <T> T eval(Object rootObject, Type clazz) {
+        return this.eval(rootObject, clazz, ParserConfig.getGlobalInstance());
     }
 
     public Object extract(DefaultJSONParser parser) {
@@ -127,7 +162,9 @@ public class JSONPath implements JSONAware {
         }
 
         Segment lastSegment = segments[segments.length - 1];
-        if (lastSegment instanceof TypeSegment || lastSegment instanceof FloorSegment) {
+        if (lastSegment instanceof TypeSegment
+                || lastSegment instanceof FloorSegment
+                || lastSegment instanceof MultiIndexSegment) {
             return eval(
                     parser.parse());
         }
@@ -162,6 +199,8 @@ public class JSONPath implements JSONAware {
                 } else if (nextSegment instanceof FilterSegment) {
                     eval = true;
                 } else if (segment instanceof WildCardSegment) {
+                    eval = true;
+                }else if(segment instanceof MultiIndexSegment){
                     eval = true;
                 } else {
                     eval = false;
@@ -603,6 +642,11 @@ public class JSONPath implements JSONAware {
         return jsonpath.eval(rootObject);
     }
 
+    public static Object eval(Object rootObject, String path, boolean ignoreNullValue) {
+        JSONPath jsonpath = compile(path, ignoreNullValue);
+        return jsonpath.eval(rootObject);
+    }
+
     public static int size(Object rootObject, String path) {
         JSONPath jsonpath = compile(path);
         Object result = jsonpath.eval(rootObject);
@@ -667,6 +711,22 @@ public class JSONPath implements JSONAware {
         return jsonpath;
     }
 
+    public static JSONPath compile(String path, boolean ignoreNullValue) {
+        if (path == null) {
+            throw new JSONPathException("jsonpath can not be null");
+        }
+
+        JSONPath jsonpath = pathCache.get(path);
+        if (jsonpath == null) {
+            jsonpath = new JSONPath(path, ignoreNullValue);
+            if (pathCache.size() < 1024) {
+                pathCache.putIfAbsent(path, jsonpath);
+                jsonpath = pathCache.get(path);
+            }
+        }
+        return jsonpath;
+    }
+
     /**
      * @since 1.2.9
      * @param json
@@ -678,6 +738,29 @@ public class JSONPath implements JSONAware {
                 .eval(
                         JSON.parse(json)
                 );
+    }
+    
+    /**
+     * @since 1.2.76
+     * @param json
+     * @param path
+     * @param clazz
+     * @param parserConfig
+     * @return
+     */
+    public static <T> T read(String json, String path, Type clazz, ParserConfig parserConfig) {
+        return compile(path).eval(JSON.parse(json), clazz, parserConfig);
+    }
+    
+    /**
+     * @since 1.2.76
+     * @param json
+     * @param path
+     * @param clazz
+     * @return
+     */
+    public static <T> T read(String json, String path, Type clazz) {
+        return read(json, path, clazz, null);
     }
 
     /**
@@ -876,12 +959,21 @@ public class JSONPath implements JSONAware {
                             next();
                         }
                     }
-                    if (ch == '*') {
+                    if (ch == '*' || (deep && ch == '[')) {
+                        boolean objectOnly = ch == '[';
                         if (!isEOF()) {
                             next();
                         }
 
-                        return deep ? WildCardSegment.instance_deep : WildCardSegment.instance;
+                        if (deep) {
+                            if (objectOnly) {
+                                return WildCardSegment.instance_deep_objectOnly;
+                            } else {
+                                return WildCardSegment.instance_deep;
+                            }
+                        } else {
+                            return WildCardSegment.instance;
+                        }
                     }
                     
                     if (isDigitFirst(ch)) {
@@ -1014,6 +1106,12 @@ public class JSONPath implements JSONAware {
                 }
 
                 if (acceptBracket && ch == ']') {
+                    if (isEOF()) {
+                        if (propertyName.equals("last")) {
+                            return new MultiIndexSegment(new int[]{-1});
+                        }
+                    }
+
                     next();
                     Filter filter = new NotNullSegement(propertyName, false);
                     while (ch == ' ') {
@@ -2575,13 +2673,16 @@ public class JSONPath implements JSONAware {
 
     static class WildCardSegment implements Segment {
         private boolean deep;
+        private boolean objectOnly;
 
-        private WildCardSegment(boolean deep) {
+        private WildCardSegment(boolean deep, boolean objectOnly) {
             this.deep = deep;
+            this.objectOnly = objectOnly;
         }
 
-        public final static WildCardSegment instance = new WildCardSegment(false);
-        public final static WildCardSegment instance_deep = new WildCardSegment(true);
+        public final static WildCardSegment instance = new WildCardSegment(false, false);
+        public final static WildCardSegment instance_deep = new WildCardSegment(true, false);
+        public final static WildCardSegment instance_deep_objectOnly = new WildCardSegment(true, true);
 
         public Object eval(JSONPath path, Object rootObject, Object currentObject) {
             if (!deep) {
@@ -2598,7 +2699,11 @@ public class JSONPath implements JSONAware {
                 Object object = parser.parse();
                 if (deep) {
                     List<Object> values = new ArrayList<Object>();
-                    path.deepGetPropertyValues(object, values);
+                    if (objectOnly) {
+                        path.deepGetObjects(object, values);
+                    } else {
+                        path.deepGetPropertyValues(object, values);
+                    }
                     context.object = values;
                     return;
                 }
@@ -2606,9 +2711,7 @@ public class JSONPath implements JSONAware {
                 if (object instanceof JSONObject) {
                     Collection<Object> values = ((JSONObject) object).values();
                     JSONArray array = new JSONArray(values.size());
-                    for (Object value : values) {
-                        array.add(value);
-                    }
+                    array.addAll(values);
                     context.object = array;
                     return;
                 } else if (object instanceof JSONArray) {
@@ -3584,6 +3687,41 @@ public class JSONPath implements JSONAware {
         throw new UnsupportedOperationException();
     }
 
+    protected void deepGetObjects(final Object currentObject, List<Object> outValues) {
+        final Class<?> currentClass = currentObject.getClass();
+
+        JavaBeanSerializer beanSerializer = getJavaBeanSerializer(currentClass);
+
+        Collection collection = null;
+        if (beanSerializer != null) {
+            try {
+                collection = beanSerializer.getFieldValues(currentObject);
+                outValues.add(currentObject);
+            } catch (Exception e) {
+                throw new JSONPathException("jsonpath error, path " + path, e);
+            }
+        } else if (currentObject instanceof Map) {
+            outValues.add(currentObject);
+            Map map = (Map) currentObject;
+            collection = map.values();
+        } else if (currentObject instanceof Collection) {
+            collection = (Collection) currentObject;
+        }
+
+        if (collection != null) {
+            for (Object fieldValue : collection) {
+                if (fieldValue == null || ParserConfig.isPrimitive2(fieldValue.getClass())) {
+                    // skip
+                } else {
+                    deepGetObjects(fieldValue, outValues);
+                }
+            }
+            return;
+        }
+
+        throw new UnsupportedOperationException(currentClass.getName());
+    }
+
     protected void deepGetPropertyValues(final Object currentObject, List<Object> outValues) {
         final Class<?> currentClass = currentObject.getClass();
 
@@ -3709,7 +3847,7 @@ public class JSONPath implements JSONAware {
 
         if (currentObject instanceof String) {
             try {
-                JSONObject object = JSON.parseObject((String) currentObject);
+                JSONObject object = (JSONObject) JSON.parse((String) currentObject, parserConfig);
                 currentObject = object;
             } catch (Exception ex) {
                 // skip
@@ -3766,7 +3904,7 @@ public class JSONPath implements JSONAware {
                         fieldValues = new JSONArray(list.size());
                     }
                     fieldValues.addAll(collection);
-                } else if (itemValue != null) {
+                } else if (itemValue != null || !ignoreNullValue) {
                     if (fieldValues == null) {
                         fieldValues = new JSONArray(list.size());
                     }
@@ -3803,7 +3941,7 @@ public class JSONPath implements JSONAware {
                 if (itemValue instanceof Collection) {
                     Collection collection = (Collection) itemValue;
                     fieldValues.addAll(collection);
-                } else if (itemValue != null) {
+                } else if (itemValue != null || !ignoreNullValue) {
                     fieldValues.add(itemValue);
                 }
             }

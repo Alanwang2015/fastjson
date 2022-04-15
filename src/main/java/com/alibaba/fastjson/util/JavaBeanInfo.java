@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONException;
 import com.alibaba.fastjson.PropertyNamingStrategy;
 import com.alibaba.fastjson.annotation.JSONCreator;
@@ -315,7 +316,23 @@ public class JavaBeanInfo {
 
         boolean isInterfaceOrAbstract = clazz.isInterface() || Modifier.isAbstract(clazz.getModifiers());
         if ((defaultConstructor == null && builderClass == null) || isInterfaceOrAbstract) {
-            creatorConstructor = getCreatorConstructor(constructors);
+
+            Type mixInType = JSON.getMixInAnnotations(clazz);
+            if (mixInType instanceof Class) {
+                Constructor<?>[] mixInConstructors = ((Class<?>) mixInType).getConstructors();
+                Constructor<?> mixInCreator = getCreatorConstructor(mixInConstructors);
+                if (mixInCreator != null) {
+                    try {
+                        creatorConstructor = clazz.getConstructor(mixInCreator.getParameterTypes());
+                    } catch (NoSuchMethodException e) {
+                        // skip
+                    }
+                }
+            }
+
+            if (creatorConstructor == null) {
+                creatorConstructor = getCreatorConstructor(constructors);
+            }
 
             if (creatorConstructor != null && !isInterfaceOrAbstract) { // 基于标记 JSONCreator 注解的构造方法
                 TypeUtils.setAccessible(creatorConstructor);
@@ -550,8 +567,7 @@ public class JavaBeanInfo {
                         add(fieldList, fieldInfo);
                     }
 
-                    if ((!kotlin)
-                            && !clazz.getName().equals("javax.servlet.http.Cookie")) {
+                    if ((!kotlin) && !clazz.getName().equals("javax.servlet.http.Cookie")) {
                         return new JavaBeanInfo(clazz, builderClass, null, creatorConstructor, null, null, jsonType, fieldList);
                     }
                 } else {
@@ -1073,10 +1089,6 @@ public class JavaBeanInfo {
 
                 creatorConstructor = constructor;
             }
-        }
-
-        if (creatorConstructor != null) {
-            return creatorConstructor;
         }
 
         return creatorConstructor;

@@ -10,6 +10,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TimeZone;
 
 import junit.framework.TestCase;
 
@@ -245,6 +246,7 @@ public class TypeUtilsTest extends TestCase {
     }
 
     public void test_cast_to_Timestamp_1970_01_01_00_00_00() throws Exception {
+        JSON.defaultTimeZone = TimeZone.getTimeZone("Asia/Shanghai");
         Assert.assertEquals(new Timestamp(0), TypeUtils.castToTimestamp("1970-01-01 08:00:00"));
     }
 
@@ -296,7 +298,7 @@ public class TypeUtilsTest extends TestCase {
         Assert.assertEquals(new java.sql.Timestamp(millis), json.getObject("date", java.sql.Timestamp.class));
     }
 
-    public void test_cast_to_Timestamp_error() throws Exception {
+    public void test_cast_to_Timestamp_not_error() throws Exception {
         JSONObject json = new JSONObject();
         json.put("date", -1);
 
@@ -306,7 +308,8 @@ public class TypeUtilsTest extends TestCase {
         } catch (JSONException e) {
             error = e;
         }
-        Assert.assertNotNull(error);
+        Assert.assertNull(error);
+        Assert.assertEquals(new Timestamp(-1L), (java.sql.Timestamp) json.getObject("date", java.sql.Timestamp.class));
     }
 
     public void test_cast_ab() throws Exception {
@@ -380,7 +383,7 @@ public class TypeUtilsTest extends TestCase {
 
     public static class User {
 
-        private long   id;
+        private long id;
         private String name;
 
         public long getId() {

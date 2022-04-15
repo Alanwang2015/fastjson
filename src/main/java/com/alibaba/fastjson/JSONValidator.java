@@ -14,9 +14,10 @@ public abstract class JSONValidator implements Cloneable, Closeable {
     protected int pos = -1;
     protected char ch;
     protected Type type;
+    private Boolean validateResult;
 
     protected int count = 0;
-    protected boolean supportMultiValue = true;
+    protected boolean supportMultiValue = false;
 
     public static JSONValidator fromUtf8(byte[] jsonBytes) {
         return new UTF8Validator(jsonBytes);
@@ -38,8 +39,9 @@ public abstract class JSONValidator implements Cloneable, Closeable {
         return supportMultiValue;
     }
 
-    public void setSupportMultiValue(boolean supportMultiValue) {
+    public JSONValidator setSupportMultiValue(boolean supportMultiValue) {
         this.supportMultiValue = supportMultiValue;
+        return this;
     }
 
     public Type getType() {
@@ -53,13 +55,20 @@ public abstract class JSONValidator implements Cloneable, Closeable {
     abstract void next();
 
     public boolean validate() {
+        if (validateResult != null) {
+            return validateResult;
+        }
+
         for (;;) {
             if (!any()) {
+                validateResult = false;
                 return false;
             }
+            skipWhiteSpace();
 
             count++;
             if (eof) {
+                validateResult = true;
                 return true;
             }
 
@@ -70,10 +79,12 @@ public abstract class JSONValidator implements Cloneable, Closeable {
                 }
                 continue;
             } else {
+                validateResult = false;
                 return false;
             }
         }
 
+        validateResult = true;
         return true;
     }
 
@@ -85,7 +96,11 @@ public abstract class JSONValidator implements Cloneable, Closeable {
         switch (ch) {
             case '{':
                 next();
-                skipWhiteSpace();
+
+                while (isWhiteSpace(ch)) {
+                    next();
+                }
+
                 if (ch == '}') {
                     next();
                     type = Type.Object;
@@ -106,19 +121,22 @@ public abstract class JSONValidator implements Cloneable, Closeable {
                         return false;
                     }
                     skipWhiteSpace();
+
                     if (!any()) {
                         return false;
                     }
 
+                    // kv 结束时，只能是 "," 或 "}"
                     skipWhiteSpace();
                     if (ch == ',') {
                         next();
                         skipWhiteSpace();
-                        continue;
                     } else if (ch == '}') {
                         next();
                         type = Type.Object;
                         return true;
+                    } else {
+                        return false;
                     }
                 }
             case '[':
@@ -207,6 +225,10 @@ public abstract class JSONValidator implements Cloneable, Closeable {
             case '"':
                 next();
                 for (;;) {
+                    if (eof) {
+                        return false;
+                    }
+
                     if (ch == '\\') {
                         next();
                         if (ch == 'u') {
@@ -335,6 +357,36 @@ public abstract class JSONValidator implements Cloneable, Closeable {
         }
     }
 
+    protected boolean string()
+    {
+        next();
+        for (; !eof; ) {
+            if (ch == '\\') {
+                next();
+
+                if (ch == 'u') {
+                    next();
+
+                    next();
+                    next();
+                    next();
+                    next();
+                } else {
+                    next();
+                }
+            }
+            else if (ch == '"') {
+                next();
+                return true;
+            }
+            else {
+                next();
+            }
+        }
+
+        return false;
+    }
+
     void skipWhiteSpace() {
         while (isWhiteSpace(ch)) {
             next();
@@ -454,6 +506,49 @@ public abstract class JSONValidator implements Cloneable, Closeable {
                 ch = str.charAt(pos);
             }
         }
+
+        protected final void fieldName()
+        {
+            for (int i = pos + 1; i < str.length(); ++i) {
+                char ch = str.charAt(i);
+                if (ch == '\\') {
+                    break;
+                }
+                if (ch == '\"') {
+                    this.ch = str.charAt(i + 1);
+                    pos = i + 1;
+                    return;
+                }
+            }
+
+            next();
+            for (; ; ) {
+                if (ch == '\\') {
+                    next();
+
+                    if (ch == 'u') {
+                        next();
+
+                        next();
+                        next();
+                        next();
+                        next();
+                    } else {
+                        next();
+                    }
+                }
+                else if (ch == '"') {
+                    next();
+                    break;
+                }
+                else if(eof){
+                    break;
+                }else {
+                    next();
+                }
+            }
+        }
+
     }
 
     static class ReaderValidator extends JSONValidator {
@@ -516,7 +611,7 @@ public abstract class JSONValidator implements Cloneable, Closeable {
 
         public void close() throws IOException {
             bufLocal.set(buf);
-            r.close();;
+            r.close();
         }
     }
 }

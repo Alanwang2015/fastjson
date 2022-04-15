@@ -36,13 +36,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.util.Collection;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Set;
-import java.util.List;
+import java.util.*;
 
 import com.alibaba.fastjson.annotation.JSONField;
 import com.alibaba.fastjson.parser.Feature;
@@ -96,8 +90,14 @@ public class JSONObject extends JSON implements Map<String, Object>, Cloneable, 
 
     public boolean containsKey(Object key) {
         boolean result = map.containsKey(key);
-        if ((!result) && key instanceof Number) {
-            result = map.containsKey(key.toString());
+        if (!result) {
+            if (key instanceof Number
+                    || key instanceof Character
+                    || key instanceof Boolean
+                    || key instanceof UUID
+            ) {
+                result = map.containsKey(key.toString());
+            }
         }
         return result;
     }
@@ -109,11 +109,22 @@ public class JSONObject extends JSON implements Map<String, Object>, Cloneable, 
     public Object get(Object key) {
         Object val = map.get(key);
 
-        if (val == null && key instanceof Number) {
-            val = map.get(key.toString());
+        if (val == null) {
+            if (key instanceof Number
+                    || key instanceof Character
+                    || key instanceof Boolean
+                    || key instanceof UUID
+            ) {
+                val = map.get(key.toString());
+            }
         }
 
         return val;
+    }
+
+    public Object getOrDefault(Object key, Object defaultValue) {
+        Object v;
+        return ((v = get(key)) != null) ? v : defaultValue;
     }
 
     public JSONObject getJSONObject(String key) {
@@ -331,13 +342,13 @@ public class JSONObject extends JSON implements Map<String, Object>, Cloneable, 
         return castToDate(value);
     }
 
-    public java.sql.Date getSqlDate(String key) {
+    public Object getSqlDate(String key) {
         Object value = get(key);
 
         return castToSqlDate(value);
     }
 
-    public java.sql.Timestamp getTimestamp(String key) {
+    public Object getTimestamp(String key) {
         Object value = get(key);
 
         return castToTimestamp(value);
@@ -392,17 +403,27 @@ public class JSONObject extends JSON implements Map<String, Object>, Cloneable, 
     }
 
     @Override
-    public Object clone() {
+    public JSONObject clone() {
         return new JSONObject(map instanceof LinkedHashMap //
                 ? new LinkedHashMap<String, Object>(map) //
                 : new HashMap<String, Object>(map)
         );
     }
 
+    @Override
     public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+
+        if (obj instanceof JSONObject) {
+            return this.map.equals(((JSONObject) obj).map);
+        }
+
         return this.map.equals(obj);
     }
 
+    @Override
     public int hashCode() {
         return this.map.hashCode();
     }

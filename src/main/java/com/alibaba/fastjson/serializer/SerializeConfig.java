@@ -57,8 +57,6 @@ public class SerializeConfig {
     private static boolean                                oracleJdbcError = false;
     private static boolean                                springfoxError  = false;
     private static boolean                                guavaError      = false;
-    private static boolean                                jsonnullError   = false;
-    private static boolean                                jsonobjectError = false;
     
     private static boolean                                jodaError       = false;
 
@@ -79,7 +77,7 @@ public class SerializeConfig {
             };
 
     private List<Module>                                    modules                = new ArrayList<Module>();
-    
+
 	public String getTypeKey() {
 		return typeKey;
 	}
@@ -578,7 +576,7 @@ public class SerializeConfig {
                     || XMLGregorianCalendar.class.isAssignableFrom(clazz)) {
                 put(clazz, writer = CalendarCodec.instance);
             } else if (TypeUtils.isClob(clazz)) {
-                put(clazz, writer = ClobSeriliazer.instance);
+                put(clazz, writer = ClobSerializer.instance);
             } else if (TypeUtils.isPath(clazz)) {
                 put(clazz, writer = ToStringSerializer.instance);
             } else if (Iterator.class.isAssignableFrom(clazz)) {
@@ -727,24 +725,14 @@ public class SerializeConfig {
                     }
                 }
 
-                if ((!jsonnullError) && className.equals("net.sf.json.JSONNull")) {
-                    try {
-                        put(Class.forName("net.sf.json.JSONNull"), writer = MiscCodec.instance);
-                        return writer;
-                    } catch (ClassNotFoundException e) {
-                        // skip
-                        jsonnullError = true;
-                    }
+                if (className.equals("net.sf.json.JSONNull")) {
+                    put(clazz, writer = MiscCodec.instance);
+                    return writer;
                 }
                 
-				if (!jsonobjectError && className.equals("org.json.JSONObject")) {
-					try {
-						put(Class.forName("org.json.JSONObject"), writer = JSONObjectCodec.instance);
-						return writer;
-					} catch (ClassNotFoundException e) {
-						// skip
-						jsonobjectError = true;
-					}
+				if (className.equals("org.json.JSONObject")) {
+                    put(clazz, writer = JSONObjectCodec.instance);
+                    return writer;
 				}
 
                 if ((!jodaError) && className.startsWith("org.joda.")) {

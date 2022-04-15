@@ -31,6 +31,7 @@ import java.nio.charset.Charset;
 import java.security.AccessControlException;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -57,6 +58,9 @@ import com.alibaba.fastjson.util.IdentityHashMap;
 import com.alibaba.fastjson.util.ServiceLoader;
 
 import javax.xml.datatype.XMLGregorianCalendar;
+
+import static com.alibaba.fastjson.util.TypeUtils.fnv1a_64_magic_hashcode;
+import static com.alibaba.fastjson.util.TypeUtils.fnv1a_64_magic_prime;
 
 /**
  * @author wenshao[szujobs@hotmail.com]
@@ -216,14 +220,18 @@ public class ParserConfig {
                 0xA123A62F93178B20L,
                 0xA85882CE1044C450L,
                 0xAA3DAFFDB10C4937L,
+                0xAAA9E6B7C1E1C6A7L,
+                0xAAAA0826487A3737L,
                 0xAC6262F52C98AA39L,
                 0xAD937A449831E8A0L,
                 0xAE50DA1FAD60A096L,
+                0xAFF6FF23388E225AL,
                 0xAFFF4C95B99A334DL,
                 0xB40F341C746EC94FL,
                 0xB7E8ED757F5D13A2L,
                 0xB98B6B5396932FE9L,
                 0xBCDD9DC12766F0CEL,
+                0xBCE0DEE34E726499L,
                 0xBEBA72FB1CCBA426L,
                 0xC00BE1DEBAF2808BL,
                 0xC1086AFAE32E6258L,
@@ -232,6 +240,7 @@ public class ParserConfig {
                 0xC664B363BACA050AL,
                 0xC7599EBFE3E72406L,
                 0xC8D49E5601E661A9L,
+                0xC8F04B3A28909935L,
                 0xC963695082FD728EL,
                 0xD1EFCDF4B3316D34L,
                 0xD54B91CC77B239EDL,
@@ -251,6 +260,8 @@ public class ParserConfig {
                 0xF2983D099D29B477L,
                 0xF3702A4A5490B8E8L,
                 0xF474E44518F26736L,
+                0xF5D77DCF8E4D71E6L,
+                0xF6C0340E73A36A69L,
                 0xF7E96E74DFA58DBCL,
                 0xFC773AE20C827691L,
                 0xFCF3E78644B98BD8L,
@@ -263,6 +274,7 @@ public class ParserConfig {
                 0x3085068CB7201B8L,
                 0x45B11BC78A3ABA3L,
                 0x55CFCA0F2281C07L,
+                0xA555C74FE3A5155L,
                 0xB6E292FA5955ADEL,
                 0xEE6511B66FD5EF0L,
                 0x100150A253996624L,
@@ -320,6 +332,7 @@ public class ParserConfig {
                 0x5B6149820275EA42L,
                 0x5D74D3E5B9370476L,
                 0x5D92E6DDDE40ED84L,
+                0x5E61093EF8CDDDBBL,
                 0x5F215622FB630753L,
                 0x61C5BDD721385107L,
                 0x62DB241274397C34L,
@@ -331,6 +344,7 @@ public class ParserConfig {
                 0x69B6E0175084B377L,
                 0x6A47501EBB2AFDB2L,
                 0x6FCABF6FA54CAFFFL,
+                0x6FE92D83FC0A4628L,
                 0x746BD4A53EC195FBL,
                 0x74B50BB9260E31FFL,
                 0x75CC60F5871D0FD3L,
@@ -397,12 +411,18 @@ public class ParserConfig {
 
     }
 
+    private final Callable<Void> initDeserializersWithJavaSql = new Callable<Void>() {
+        public Void call() {
+            deserializers.put(java.sql.Timestamp.class, SqlDateDeserializer.instance_timestamp);
+            deserializers.put(java.sql.Date.class, SqlDateDeserializer.instance);
+            deserializers.put(java.sql.Time.class, TimeDeserializer.instance);
+            deserializers.put(java.util.Date.class, DateCodec.instance);
+            return null;
+        }
+    };
+
     private void initDeserializers() {
         deserializers.put(SimpleDateFormat.class, MiscCodec.instance);
-        deserializers.put(java.sql.Timestamp.class, SqlDateDeserializer.instance_timestamp);
-        deserializers.put(java.sql.Date.class, SqlDateDeserializer.instance);
-        deserializers.put(java.sql.Time.class, TimeDeserializer.instance);
-        deserializers.put(java.util.Date.class, DateCodec.instance);
         deserializers.put(Calendar.class, CalendarCodec.instance);
         deserializers.put(XMLGregorianCalendar.class, CalendarCodec.instance);
 
@@ -478,6 +498,7 @@ public class ParserConfig {
         deserializers.put(Closeable.class, JavaObjectDeserializer.instance);
 
         deserializers.put(JSONPObject.class, new JSONPDeserializer());
+        ModuleUtil.callWhenHasJavaSql(initDeserializersWithJavaSql);
     }
 
     private static String[] splitItemsFormProperty(final String property ){
@@ -615,6 +636,11 @@ public class ParserConfig {
 
     public ObjectDeserializer getDeserializer(Class<?> clazz, Type type) {
         ObjectDeserializer deserializer = get(type);
+        if (deserializer == null && type instanceof ParameterizedTypeImpl) {
+            Type innerType = TypeReference.intern((ParameterizedTypeImpl) type);
+            deserializer = get(innerType);
+        }
+
         if (deserializer != null) {
             return deserializer;
         }
@@ -1146,28 +1172,37 @@ public class ParserConfig {
         return isPrimitive2(clazz);
     }
 
+    private static Function<Class<?>, Boolean> isPrimitiveFuncation = new Function<Class<?>, Boolean>() {
+        public Boolean apply(Class<?> clazz) {
+            return clazz == java.sql.Date.class //
+                    || clazz == java.sql.Time.class //
+                    || clazz == java.sql.Timestamp.class;
+        }
+    };
+
     /**
      * @deprecated  internal method, dont call
      */
-    public static boolean isPrimitive2(Class<?> clazz) {
-        return clazz.isPrimitive() //
-               || clazz == Boolean.class //
-               || clazz == Character.class //
-               || clazz == Byte.class //
-               || clazz == Short.class //
-               || clazz == Integer.class //
-               || clazz == Long.class //
-               || clazz == Float.class //
-               || clazz == Double.class //
-               || clazz == BigInteger.class //
-               || clazz == BigDecimal.class //
-               || clazz == String.class //
-               || clazz == java.util.Date.class //
-               || clazz == java.sql.Date.class //
-               || clazz == java.sql.Time.class //
-               || clazz == java.sql.Timestamp.class //
-               || clazz.isEnum() //
-        ;
+    public static boolean isPrimitive2(final Class<?> clazz) {
+        Boolean primitive = clazz.isPrimitive() //
+                || clazz == Boolean.class //
+                || clazz == Character.class //
+                || clazz == Byte.class //
+                || clazz == Short.class //
+                || clazz == Integer.class //
+                || clazz == Long.class //
+                || clazz == Float.class //
+                || clazz == Double.class //
+                || clazz == BigInteger.class //
+                || clazz == BigDecimal.class //
+                || clazz == String.class //
+                || clazz == java.util.Date.class //
+                || clazz.isEnum() //
+                ;
+        if (!primitive) {
+            primitive = ModuleUtil.callWhenHasJavaSql(isPrimitiveFuncation, clazz);
+        }
+        return primitive != null ? primitive : false;
     }
 
     /**
@@ -1211,8 +1246,7 @@ public class ParserConfig {
 
             if (fieldName.length() > 2) {
                 char c1 = fieldName.charAt(1);
-                if (fieldName.length() > 2
-                        && c0 >= 'a' && c0 <= 'z'
+                if (c0 >= 'a' && c0 <= 'z'
                         && c1 >= 'A' && c1 <= 'Z') {
                     for (Map.Entry<String, Field> entry : fieldCacheMap.entrySet()) {
                         if (fieldName.equalsIgnoreCase(entry.getKey())) {
@@ -1354,24 +1388,21 @@ public class ParserConfig {
         String className = typeName.replace('$', '.');
         Class<?> clazz;
 
-        final long BASIC = 0xcbf29ce484222325L;
-        final long PRIME = 0x100000001b3L;
-
-        final long h1 = (BASIC ^ className.charAt(0)) * PRIME;
+        final long h1 = (fnv1a_64_magic_hashcode ^ className.charAt(0)) * fnv1a_64_magic_prime;
         if (h1 == 0xaf64164c86024f1aL) { // [
             throw new JSONException("autoType is not support. " + typeName);
         }
 
-        if ((h1 ^ className.charAt(className.length() - 1)) * PRIME == 0x9198507b5af98f0L) {
+        if ((h1 ^ className.charAt(className.length() - 1)) * fnv1a_64_magic_prime == 0x9198507b5af98f0L) {
             throw new JSONException("autoType is not support. " + typeName);
         }
 
-        final long h3 = (((((BASIC ^ className.charAt(0))
-                * PRIME)
+        final long h3 = (((((fnv1a_64_magic_hashcode ^ className.charAt(0))
+                * fnv1a_64_magic_prime)
                 ^ className.charAt(1))
-                * PRIME)
+                * fnv1a_64_magic_prime)
                 ^ className.charAt(2))
-                * PRIME;
+                * fnv1a_64_magic_prime;
 
         long fullHash = TypeUtils.fnv1a_64(className);
         boolean internalWhite = Arrays.binarySearch(INTERNAL_WHITELIST_HASHCODES,  fullHash) >= 0;
@@ -1380,7 +1411,7 @@ public class ParserConfig {
             long hash = h3;
             for (int i = 3; i < className.length(); ++i) {
                 hash ^= className.charAt(i);
-                hash *= PRIME;
+                hash *= fnv1a_64_magic_prime;
                 if (Arrays.binarySearch(internalDenyHashCodes, hash) >= 0) {
                     throw new JSONException("autoType is not support. " + typeName);
                 }
@@ -1391,7 +1422,7 @@ public class ParserConfig {
             long hash = h3;
             for (int i = 3; i < className.length(); ++i) {
                 hash ^= className.charAt(i);
-                hash *= PRIME;
+                hash *= fnv1a_64_magic_prime;
                 if (Arrays.binarySearch(acceptHashCodes, hash) >= 0) {
                     clazz = TypeUtils.loadClass(typeName, defaultClassLoader, true);
                     if (clazz != null) {
@@ -1425,6 +1456,7 @@ public class ParserConfig {
         if (clazz != null) {
             if (expectClass != null
                     && clazz != java.util.HashMap.class
+                    && clazz != java.util.LinkedHashMap.class
                     && !expectClass.isAssignableFrom(clazz)) {
                 throw new JSONException("type not match. " + typeName + " -> " + expectClass.getName());
             }
@@ -1437,7 +1469,7 @@ public class ParserConfig {
             for (int i = 3; i < className.length(); ++i) {
                 char c = className.charAt(i);
                 hash ^= c;
-                hash *= PRIME;
+                hash *= fnv1a_64_magic_prime;
 
                 if (Arrays.binarySearch(denyHashCodes, hash) >= 0) {
                     throw new JSONException("autoType is not support. " + typeName);

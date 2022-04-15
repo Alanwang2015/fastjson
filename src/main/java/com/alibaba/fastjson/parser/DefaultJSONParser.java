@@ -15,8 +15,10 @@
  */
 package com.alibaba.fastjson.parser;
 
-import static com.alibaba.fastjson.parser.JSONLexer.EOI;
-import static com.alibaba.fastjson.parser.JSONToken.*;
+import com.alibaba.fastjson.*;
+import com.alibaba.fastjson.parser.deserializer.*;
+import com.alibaba.fastjson.serializer.*;
+import com.alibaba.fastjson.util.TypeUtils;
 
 import java.io.Closeable;
 import java.lang.reflect.ParameterizedType;
@@ -29,10 +31,8 @@ import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-import com.alibaba.fastjson.*;
-import com.alibaba.fastjson.parser.deserializer.*;
-import com.alibaba.fastjson.serializer.*;
-import com.alibaba.fastjson.util.TypeUtils;
+import static com.alibaba.fastjson.parser.JSONLexer.EOI;
+import static com.alibaba.fastjson.parser.JSONToken.*;
 
 /**
  * @author wenshao[szujobs@hotmail.com]
@@ -97,9 +97,7 @@ public class DefaultJSONParser implements Closeable {
                 String.class
         };
 
-        for (Class<?> clazz : classes) {
-            primitiveClasses.add(clazz);
-        }
+        primitiveClasses.addAll(Arrays.asList(classes));
     }
 
     public String getDateFomartPattern() {
@@ -119,7 +117,15 @@ public class DefaultJSONParser implements Closeable {
         this.dateFormat = null;
     }
 
+    /**
+     * @deprecated
+     * @see setDateFormat
+     */
     public void setDateFomrat(DateFormat dateFormat) {
+        this.setDateFormat(dateFormat);
+    }
+
+    public void setDateFormat(DateFormat dateFormat) {
         this.dateFormat = dateFormat;
     }
 
@@ -318,6 +324,10 @@ public class DefaultJSONParser implements Closeable {
                     if (object != null
                             && object.getClass().getName().equals(typeName)) {
                         clazz = object.getClass();
+                    } else if ("java.util.HashMap".equals(typeName)) {
+                        clazz = java.util.HashMap.class;
+                    } else if ("java.util.LinkedHashMap".equals(typeName)) {
+                        clazz = java.util.LinkedHashMap.class;
                     } else {
 
                         boolean allDigits = true;
@@ -441,8 +451,14 @@ public class DefaultJSONParser implements Closeable {
                                 setResolveStatus(DefaultJSONParser.NeedToResolve);
                             }
                         } else {
-                            addResolveTask(new ResolveTask(context, ref));
-                            setResolveStatus(DefaultJSONParser.NeedToResolve);
+                            JSONPath jsonpath = JSONPath.compile(ref);
+                            if (jsonpath.isRef()) {
+                                addResolveTask(new ResolveTask(context, ref));
+                                setResolveStatus(DefaultJSONParser.NeedToResolve);
+                            } else {
+                                refValue = new JSONObject()
+                                        .fluentPut("$ref", ref);
+                            }
                         }
 
                         if (lexer.token() != JSONToken.RBRACE) {
@@ -547,7 +563,7 @@ public class DefaultJSONParser implements Closeable {
                     ParseContext ctxLocal = null;
 
                     if (!parentIsArray) {
-                        ctxLocal = setContext(context, input, key);
+                        ctxLocal = setContext(this.context, input, key);
                     }
 
                     Object obj = null;
@@ -659,7 +675,8 @@ public class DefaultJSONParser implements Closeable {
         int token = lexer.token();
         if (token == JSONToken.NULL) {
             lexer.nextToken();
-            return null;
+
+            return (T) TypeUtils.optionalEmpty(type);
         }
 
         if (token == JSONToken.LITERAL_STRING) {
@@ -681,7 +698,7 @@ public class DefaultJSONParser implements Closeable {
         try {
             if (deserializer.getClass() == JavaBeanDeserializer.class) {
                 if (lexer.token()!= JSONToken.LBRACE && lexer.token()!=JSONToken.LBRACKET) {
-                throw new JSONException("syntax error,except start with { or [,but actually start with "+ lexer.tokenName());
+                throw new JSONException("syntax error,expect start with { or [,but actually start with "+ lexer.tokenName());
             }
                 return (T) ((JavaBeanDeserializer) deserializer).deserialze(this, type, fieldName, 0);
             } else {
@@ -718,7 +735,7 @@ public class DefaultJSONParser implements Closeable {
         }
 
         if (token != JSONToken.LBRACKET) {
-            throw new JSONException("expect '[', but " + JSONToken.name(token) + ", " + lexer.info());
+            throw new JSONException("field " + fieldName + " expect '[', but " + JSONToken.name(token) + ", " + lexer.info());
         }
 
         ObjectDeserializer deserializer = null;
@@ -1174,7 +1191,7 @@ public class DefaultJSONParser implements Closeable {
         ParseContext context = this.context;
         this.setContext(array, fieldName);
         try {
-            for (int i = 0;; ++i) {
+            for (int i = 0; ; ++i) {
                 if (lexer.isEnabled(Feature.AllowArbitraryCommas)) {
                     while (lexer.token() == JSONToken.COMMA) {
                         lexer.nextToken();
@@ -1260,6 +1277,8 @@ public class DefaultJSONParser implements Closeable {
                     continue;
                 }
             }
+        } catch (ClassCastException e) {
+            throw new JSONException("unkown error", e);
         } finally {
             this.setContext(context);
         }
@@ -1267,6 +1286,10 @@ public class DefaultJSONParser implements Closeable {
 
     public ParseContext getContext() {
         return context;
+    }
+
+    public ParseContext getOwnerContext() {
+        return context.parent;
     }
 
     public List<ResolveTask> getResolveTaskList() {
@@ -1390,14 +1413,20 @@ public class DefaultJSONParser implements Closeable {
                 parseArray(treeSet, fieldName);
                 return treeSet;
             case LBRACKET:
-                JSONArray array = new JSONArray();
+                Collection array = isEnabled(Feature.UseNativeJavaObject)
+                        ? new ArrayList()
+                        : new JSONArray();
                 parseArray(array, fieldName);
                 if (lexer.isEnabled(Feature.UseObjectArray)) {
                     return array.toArray();
                 }
                 return array;
             case LBRACE:
-                JSONObject object = new JSONObject(lexer.isEnabled(Feature.OrderedField));
+                Map object = isEnabled(Feature.UseNativeJavaObject)
+                    ? lexer.isEnabled(Feature.OrderedField)
+                    ? new HashMap()
+                    : new LinkedHashMap()
+                    : new JSONObject(lexer.isEnabled(Feature.OrderedField));
                 return parseObject(object, fieldName);
 //            case LBRACE: {
 //                Map<String, Object> map = lexer.isEnabled(Feature.OrderedField)
@@ -1565,7 +1594,7 @@ public class DefaultJSONParser implements Closeable {
                 refValue = getObject(ref);
                 if (refValue == null) {
                     try {
-                        JSONPath jsonpath = JSONPath.compile(ref);
+                        JSONPath jsonpath = new JSONPath(ref, SerializeConfig.getGlobalInstance(), config, true);
                         if (jsonpath.isRef()) {
                             refValue = jsonpath.eval(value);
                         }
@@ -1588,6 +1617,19 @@ public class DefaultJSONParser implements Closeable {
                     JSONPath jsonpath = JSONPath.compile(ref);
                     if (jsonpath.isRef()) {
                         refValue = jsonpath.eval(root);
+                    }
+                }
+
+                // workaround for bug
+                if (fieldDeser.getOwnerClass() != null
+                        && (!fieldDeser.getOwnerClass().isInstance(object))
+                        && task.ownerContext.parent != null
+                ) {
+                    for (ParseContext ctx = task.ownerContext.parent;ctx != null;ctx = ctx.parent) {
+                        if (fieldDeser.getOwnerClass().isInstance(ctx.object)) {
+                            object = ctx.object;
+                            break;
+                        }
                     }
                 }
 

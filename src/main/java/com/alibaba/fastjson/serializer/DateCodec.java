@@ -51,7 +51,7 @@ public class DateCodec extends AbstractDateDeserializer implements ObjectSeriali
         }
 
         Class<?> clazz = object.getClass();
-        if (clazz == java.sql.Date.class) {
+        if (clazz == java.sql.Date.class && !out.isEnabled(SerializerFeature.WriteDateUseDateFormat)) {
             long millis = ((java.sql.Date) object).getTime();
             TimeZone timeZone = serializer.timeZone;
             int offset = timeZone.getOffset(millis);
@@ -283,9 +283,13 @@ public class DateCodec extends AbstractDateDeserializer implements ObjectSeriali
                     dateLexer.close();
                 }
             }
-            
-            if (strVal.length() == parser.getDateFomartPattern().length()
-                    || (strVal.length() == 22 && parser.getDateFomartPattern().equals("yyyyMMddHHmmssSSSZ"))) {
+
+            String dateFomartPattern = parser.getDateFomartPattern();
+            boolean formatMatch = strVal.length() == dateFomartPattern.length()
+                    || (strVal.length() == 22 && dateFomartPattern.equals("yyyyMMddHHmmssSSSZ"))
+                    || (strVal.indexOf('T') != -1 && dateFomartPattern.contains("'T'") && strVal.length() + 2 == dateFomartPattern.length())
+                    ;
+            if (formatMatch) {
                 DateFormat dateFormat = parser.getDateFormat();
                 try {
                     return (T) dateFormat.parse(strVal);
